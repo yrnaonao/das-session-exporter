@@ -92,7 +92,7 @@ async def get_metrics():
     """
     Prometheus指标端点
     """
-    global last_collection_time
+    global last_collection_time, metrics_collector
     
     # 检查是否需要更新指标
     current_time = time.time()
@@ -101,11 +101,24 @@ async def get_metrics():
             # 双重检查，确保只有一个线程更新指标
             if current_time - last_collection_time >= settings.METRICS_UPDATE_INTERVAL:
                 try:
-                    with get_db() as db:
-                        temp_collector = MetricsCollector(db)
-                        await temp_collector.collect_all_metrics()
-                        last_collection_time = current_time
-                        logger.info("指标已更新")
+                    # 使用现有的metrics_collector实例更新指标
+                    if metrics_collector:
+                        # 重新获取数据库会话以避免会话过期
+                        with get_db() as db:
+                            # 临时创建一个收集器用于更新指标，但不重新注册指标
+                            temp_collector = MetricsCollector(db)
+                            await temp_collector.collect_all_metrics()
+                            
+                            # 更新全局收集器的缓存
+                            metrics_collector.session_count_cache = temp_collector.session_count_cache
+                            metrics_collector.session_count_cache_time = temp_collector.session_count_cache_time
+                            metrics_collector.max_connections_cache = temp_collector.max_connections_cache
+                            metrics_collector.max_connections_cache_time = temp_collector.max_connections_cache_time
+                            
+                            last_collection_time = current_time
+                            logger.info("指标已更新")
+                    else:
+                        logger.error("指标收集器未初始化")
                 except Exception as e:
                     logger.error(f"更新指标时发生错误: {str(e)}")
                     # 如果更新失败，仍然返回当前指标
@@ -122,16 +135,29 @@ async def refresh_metrics():
     """
     手动触发指标更新
     """
-    global last_collection_time
+    global last_collection_time, metrics_collector
     
     with collection_lock:
         try:
-            with get_db() as db:
-                temp_collector = MetricsCollector(db)
-                await temp_collector.manual_refresh()
-                last_collection_time = time.time()
-            logger.info("手动刷新指标完成")
-            return {"message": "指标刷新成功"}
+            if metrics_collector:
+                # 重新获取数据库会话以避免会话过期
+                with get_db() as db:
+                    # 临时创建一个收集器用于更新指标
+                    temp_collector = MetricsCollector(db)
+                    await temp_collector.manual_refresh()
+                    
+                    # 更新全局收集器的缓存
+                    metrics_collector.session_count_cache = temp_collector.session_count_cache
+                    metrics_collector.session_count_cache_time = temp_collector.session_count_cache_time
+                    metrics_collector.max_connections_cache = temp_collector.max_connections_cache
+                    metrics_collector.max_connections_cache_time = temp_collector.max_connections_cache_time
+                    
+                    last_collection_time = time.time()
+                logger.info("手动刷新指标完成")
+                return {"message": "指标刷新成功"}
+            else:
+                logger.error("指标收集器未初始化")
+                return {"message": "指标收集器未初始化"}
         except Exception as e:
             logger.error(f"手动刷新指标时发生错误: {str(e)}")
             raise HTTPException(status_code=500, detail=f"刷新指标失败: {str(e)}")

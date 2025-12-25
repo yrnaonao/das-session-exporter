@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
-from prometheus_client import Gauge
+from prometheus_client import Gauge, REGISTRY
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -12,6 +12,32 @@ from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
+
+# 全局指标实例，避免重复注册
+_db_user_session_count = None
+_db_max_user_connections = None
+
+def get_or_create_gauge():
+    """
+    获取或创建Gauge指标实例，避免重复注册
+    """
+    global _db_user_session_count, _db_max_user_connections
+    
+    if _db_user_session_count is None:
+        _db_user_session_count = Gauge(
+            'db_user_session_count',
+            '数据库用户会话数',
+            ['ins_id', 'ins_name', 'ins_type', 'aliyun_uid', 'db_user', 'node_id', 'node_type']
+        )
+    
+    if _db_max_user_connections is None:
+        _db_max_user_connections = Gauge(
+            'db_max_user_connections',
+            '用户最大连接数',
+            ['ins_id', 'username']
+        )
+    
+    return _db_user_session_count, _db_max_user_connections
 
 
 class MetricsCollector:
@@ -23,18 +49,8 @@ class MetricsCollector:
         self.db = db
         self.das_client = DASClient(db_session=db)  # 传递数据库会话给DAS客户端
         
-        # 初始化Prometheus指标
-        self.db_user_session_count = Gauge(
-            'db_user_session_count',
-            '数据库用户会话数',
-            ['ins_id', 'ins_name', 'ins_type', 'aliyun_uid', 'db_user', 'node_id', 'node_type']
-        )
-        
-        self.db_max_user_connections = Gauge(
-            'db_max_user_connections',
-            '用户最大连接数',
-            ['ins_id', 'username']
-        )
+        # 获取或创建指标实例
+        self.db_user_session_count, self.db_max_user_connections = get_or_create_gauge()
         
         # 缓存相关
         self.session_count_cache = {}
