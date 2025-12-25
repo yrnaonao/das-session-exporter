@@ -64,14 +64,14 @@ class DASClient:
                         access_key_id=account.access_key_id,
                         access_key_secret=access_key_secret
                     )
-                    config.endpoint = f'das.{account.region_id}.aliyuncs.com'
+                    config.endpoint = f'das-vpc.ap-southeast-5.aliyuncs.com'
                 else:
                     # 如果数据库中没有找到对应账号，使用默认认证
                     credential = CredentialClient()
                     config = open_api_models.Config(
                         credential=credential
                     )
-                    config.endpoint = f'das.{settings.ALIBABA_CLOUD_REGION_ID}.aliyuncs.com'
+                    config.endpoint = f'das-vpc.ap-southeast-5.aliyuncs.com'
             else:
                 # 使用默认凭证（从环境变量获取）
                 credential = CredentialClient()
