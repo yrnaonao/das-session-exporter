@@ -34,7 +34,7 @@ def get_or_create_gauge() -> Tuple[Gauge, Gauge]:
         _db_max_user_connections = Gauge(
             'db_max_user_connections',
             '用户最大连接数',
-            ['ins_id', 'username']
+            ['ins_id', 'db_user']
         )
     
     return _db_user_session_count, _db_max_user_connections
@@ -150,7 +150,7 @@ class MetricsCollector:
         
         new_cache: Dict[Tuple, int] = {}
         for user in users:
-            labels = {'ins_id': user.ins_id, 'username': user.username}
+            labels = {'ins_id': user.ins_id, 'db_user': user.username}
             value = user.max_user_connections
             self.db_max_user_connections.labels(**labels).set(value)
             new_cache[tuple(sorted(labels.items()))] = value
