@@ -93,7 +93,7 @@ class MetricsCollector:
             logger.info(f"处理实例: {instance.ins_id}, 类型: {instance.ins_type}, 阿里云账号: {instance.aliyun_uid}")
             
             if instance.ins_type.lower() == 'polardb':
-                # PolarDB实例：需要查询所有节点
+                # PolarDB实例：需要查询所有节点，对每个节点调用DAS API
                 nodes = self.db.query(InstanceNodeId).filter(
                     InstanceNodeId.ins_id == instance.ins_id
                 ).all()
@@ -102,7 +102,8 @@ class MetricsCollector:
                     node_type_label = "read" if node.node_type == 1 else "write"
                     logger.info(f"获取PolarDB节点 {node.node_id} 的会话信息")
                     
-                    session_data = await self.das_client.get_mysql_session_data(node.node_id, instance.aliyun_uid)
+                    # 对PolarDB节点调用DAS API，传递实例ID和节点ID
+                    session_data = await self.das_client.get_mysql_session_data(instance.ins_id, instance.aliyun_uid, node.node_id)
                     if session_data:
                         user_stats = self.das_client.parse_user_session_stats(session_data)
                         
@@ -127,6 +128,7 @@ class MetricsCollector:
                 node_type_label = "read" if instance.ins_is_readonly == 1 else "write"
                 logger.info(f"获取RDS实例 {instance.ins_id} 的会话信息")
                 
+                # 对RDS实例调用DAS API，只传递实例ID
                 session_data = await self.das_client.get_mysql_session_data(instance.ins_id, instance.aliyun_uid)
                 if session_data:
                     user_stats = self.das_client.parse_user_session_stats(session_data)

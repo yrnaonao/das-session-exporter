@@ -64,21 +64,24 @@ class DASClient:
                         access_key_id=account.access_key_id,
                         access_key_secret=access_key_secret
                     )
-                    config.endpoint = f'das-vpc.ap-southeast-5.aliyuncs.com'
+                    # 使用配置化的endpoint
+                    config.endpoint = settings.DAS_API_ENDPOINT.format(region_id=account.region_id)
                 else:
                     # 如果数据库中没有找到对应账号，使用默认认证
                     credential = CredentialClient()
                     config = open_api_models.Config(
                         credential=credential
                     )
-                    config.endpoint = f'das-vpc.ap-southeast-5.aliyuncs.com'
+                    # 使用配置化的endpoint
+                    config.endpoint = settings.DAS_API_ENDPOINT.format(region_id=settings.ALIBABA_CLOUD_REGION_ID)
             else:
                 # 使用默认凭证（从环境变量获取）
                 credential = CredentialClient()
                 config = open_api_models.Config(
                     credential=credential
                 )
-                config.endpoint = f'das.{settings.ALIBABA_CLOUD_REGION_ID}.aliyuncs.com'
+                # 使用配置化的endpoint
+                config.endpoint = settings.DAS_API_ENDPOINT.format(region_id=settings.ALIBABA_CLOUD_REGION_ID)
             
             return DAS20200116Client(config)
         except Exception as e:
@@ -133,15 +136,17 @@ class DASClient:
             await asyncio.sleep(min_interval - time_since_last_call)
         self._last_call_time = time.time()
     
-    async def get_mysql_session_async(self, instance_id: str, aliyun_uid: str = None) -> Optional[Dict[str, Any]]:
+    async def get_mysql_session_async(self, instance_id: str, aliyun_uid: str = None, node_id: str = None) -> Optional[Dict[str, Any]]:
         """
         异步获取MySQL会话信息
+        对于RDS: 使用 instance_id
+        对于PolarDB: 使用 node_id (但可能需要实例ID作为参考)
         """
         await self._rate_limit_delay()
         
         if not ALIBABA_SDK_AVAILABLE:
             # 模拟模式：返回测试数据
-            logger.warning(f"阿里云SDK不可用，使用模拟数据: {instance_id}")
+            logger.warning(f"阿里云SDK不可用，使用模拟数据: {instance_id}, node_id: {node_id}")
             return {
                 'Code': 200,
                 'Success': True,
@@ -160,9 +165,13 @@ class DASClient:
                 logger.error(f"无法获取账号 {aliyun_uid} 的DAS客户端")
                 return None
                 
+            # 对于PolarDB，使用node_id作为实例ID；对于RDS，使用instance_id
+            db_instance_id = node_id if node_id else instance_id
+            
             request = das20200116_models.GetMySQLAllSessionAsyncRequest(
-                instance_id=instance_id
+                dbInstanceId=db_instance_id  # 使用正确的参数名
             )
+            
             runtime = util_models.RuntimeOptions()
             
             # 在异步环境中调用同步方法
@@ -174,7 +183,7 @@ class DASClient:
                 )
             
             response_data = response.body.to_map()
-            logger.info(f"获取实例 {instance_id} 会话信息成功: {response_data.get('Code', 'Unknown')}")
+            logger.info(f"获取实例 {db_instance_id} 会话信息成功: {response_data.get('Code', 'Unknown')}")
             
             return response_data
         except Exception as e:
@@ -229,7 +238,7 @@ class DASClient:
         while attempt < max_attempts:
             try:
                 request = das20200116_models.GetAsyncResultRequest(
-                    result_id=result_id
+                    resultId=result_id  # 使用正确的参数名
                 )
                 runtime = util_models.RuntimeOptions()
                 
@@ -262,12 +271,12 @@ class DASClient:
         logger.warning(f"轮询结果 {result_id} 超时")
         return None
     
-    async def get_mysql_session_data(self, instance_id: str, aliyun_uid: str = None) -> Optional[Dict[str, Any]]:
+    async def get_mysql_session_data(self, instance_id: str, aliyun_uid: str = None, node_id: str = None) -> Optional[Dict[str, Any]]:
         """
         获取MySQL会话数据，包含异步调用和轮询结果
         """
         # 首先发起异步获取会话请求
-        async_response = await self.get_mysql_session_async(instance_id, aliyun_uid)
+        async_response = await self.get_mysql_session_async(instance_id, aliyun_uid, node_id)
         if not async_response:
             return None
         
