@@ -1,15 +1,16 @@
+"""DAS Session Exporter 入口文件"""
 import asyncio
 import logging
-import threading
-import time
-from contextlib import contextmanager
+import signal
+import sys
+from contextlib import asynccontextmanager
 
 import uvicorn
 from prometheus_client import REGISTRY, GC_COLLECTOR, PLATFORM_COLLECTOR, PROCESS_COLLECTOR
 
 from config.settings import settings
 from models.database import SessionLocal
-from services.metrics_collector import MetricsCollector
+from services.metrics_collector import get_metrics_collector
 
 
 # 配置日志
@@ -21,65 +22,86 @@ logger = logging.getLogger(__name__)
 
 
 # 移除默认收集器
-try:
-    REGISTRY.unregister(GC_COLLECTOR)
-    REGISTRY.unregister(PLATFORM_COLLECTOR)
-    REGISTRY.unregister(PROCESS_COLLECTOR)
-except KeyError:
-    # 某些收集器可能未注册
-    pass
-
-
-@contextmanager
-def get_db():
-    """
-    获取数据库会话的上下文管理器
-    """
-    db = SessionLocal()
+for collector in [GC_COLLECTOR, PLATFORM_COLLECTOR, PROCESS_COLLECTOR]:
     try:
-        yield db
-    finally:
-        db.close()
+        REGISTRY.unregister(collector)
+    except KeyError:
+        pass
 
 
-def run_periodic_collection():
-    """
-    定时收集指标的后台任务
-    """
-    global last_collection_time
-    logger.info("启动定时指标收集任务")
+class MetricsScheduler:
+    """指标采集调度器"""
     
-    while True:
-        try:
-            time.sleep(settings.METRICS_UPDATE_INTERVAL)
-            
-            with get_db() as db:
-                collector = MetricsCollector(db)
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(collector.collect_all_metrics())
-                finally:
-                    loop.close()
+    def __init__(self):
+        self._running = False
+        self._task = None
+    
+    async def _collect_loop(self):
+        """定时采集循环"""
+        while self._running:
+            try:
+                await asyncio.sleep(settings.METRICS_UPDATE_INTERVAL)
+                
+                if not self._running:
+                    break
                     
-            logger.info("定时指标收集完成")
-        except Exception as e:
-            logger.error(f"定时指标收集时发生错误: {str(e)}")
+                db = SessionLocal()
+                try:
+                    collector = get_metrics_collector(db)
+                    await collector.collect_all_metrics()
+                    logger.info("定时指标采集完成")
+                except Exception as e:
+                    logger.error(f"定时指标采集失败: {e}")
+                finally:
+                    db.close()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"采集循环异常: {e}")
+    
+    def start(self):
+        """启动调度器"""
+        self._running = True
+        self._task = asyncio.create_task(self._collect_loop())
+        logger.info("指标采集调度器已启动")
+    
+    async def stop(self):
+        """停止调度器"""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info("指标采集调度器已停止")
+
+
+# 全局调度器实例
+scheduler = MetricsScheduler()
+
+
+@asynccontextmanager
+async def lifespan_wrapper(app):
+    """应用生命周期管理"""
+    scheduler.start()
+    yield
+    await scheduler.stop()
 
 
 def main():
-    """
-    主函数
-    """
-    logger.info("启动MySQL Session Prometheus Exporter")
+    """主函数"""
+    logger.info("MySQL Session Prometheus Exporter 启动中...")
+    logger.info(f"监听地址: {settings.APP_HOST}:{settings.APP_PORT}")
+    logger.info(f"指标更新间隔: {settings.METRICS_UPDATE_INTERVAL}秒")
     
-    # 启动后台定时收集任务
-    collection_thread = threading.Thread(target=run_periodic_collection, daemon=True)
-    collection_thread.start()
+    # 修改app的lifespan
+    from core.app import app
+    app.router.lifespan_context = lifespan_wrapper
     
-    # 启动FastAPI服务器
     uvicorn.run(
-        "core.app:app",
+        app,
         host=settings.APP_HOST,
         port=settings.APP_PORT,
         log_level=settings.LOG_LEVEL.lower()
