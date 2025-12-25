@@ -6,6 +6,7 @@ from utils.encryption import encrypt_string
 def add_aliyun_account(
     db: Session,
     aliyun_uid: str,
+    aliyun_name: str,
     access_key_id: str,
     access_key_secret: str,
     region_id: str = 'cn-shanghai',
@@ -20,6 +21,7 @@ def add_aliyun_account(
     # 创建账号记录
     account = AliyunAccount(
         aliyun_uid=aliyun_uid,
+        aliyun_name=aliyun_name,
         access_key_id=access_key_id,
         encrypted_access_key_secret=encrypted_secret,
         region_id=region_id,
@@ -36,6 +38,7 @@ def add_aliyun_account(
         existing_account.access_key_id = access_key_id
         existing_account.encrypted_access_key_secret = encrypted_secret
         existing_account.region_id = region_id
+        existing_account.aliyun_name = aliyun_name
         existing_account.status = status
         db.commit()
         db.refresh(existing_account)
