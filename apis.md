@@ -37,32 +37,14 @@ class Sample:
         return DAS20200116Client(config)
 
     @staticmethod
-    def main(
-        args: List[str],
-    ) -> None:
-        client = Sample.create_client()
-        get_my_sqlall_session_async_request = das20200116_models.GetMySQLAllSessionAsyncRequest(
-            instance_id='sdsfd'
-        )
-        runtime = util_models.RuntimeOptions()
-        try:
-            # Copy the code to run, please print the return value of the API by yourself.
-            client.get_my_sqlall_session_async_with_options(get_my_sqlall_session_async_request, runtime)
-        except Exception as error:
-            # Only a printing example. Please be careful about exception handling and do not ignore exceptions directly in engineering projects.
-            # print error message
-            print(error.message)
-            # Please click on the link below for diagnosis.
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
-
-    @staticmethod
     async def main_async(
         args: List[str],
     ) -> None:
         client = Sample.create_client()
         get_my_sqlall_session_async_request = das20200116_models.GetMySQLAllSessionAsyncRequest(
-            instance_id='sdsfd'
+            instance_id='pc-xxx'
+            # node_id='pi-xxx' # 只有polardb才需要提供次参数
+            # result_id='xxxx' # 这是异步接口，第二次调用传入次参数
         )
         runtime = util_models.RuntimeOptions()
         try:

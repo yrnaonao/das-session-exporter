@@ -75,7 +75,7 @@ class AliyunAccount(Base):
     """
     __tablename__ = "aliyun_uids"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     aliyun_uid = Column(String(255), nullable=False, unique=True, comment='阿里云账号ID')
     aliyun_name = Column(String(255), nullable=False, comment='阿里云账号名称')
     access_key_id = Column(String(255), nullable=False, comment='Access Key ID')

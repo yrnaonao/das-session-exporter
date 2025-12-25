@@ -1,54 +1,32 @@
 import logging
-import threading
 import time
+import asyncio
 from typing import Optional
-from contextlib import contextmanager
-from fastapi import FastAPI, HTTPException, Depends
-from prometheus_client import generate_latest, REGISTRY
-from prometheus_client.core import CollectorRegistry
-from prometheus_client.exposition import choose_encoder
-import uvicorn
+from fastapi import FastAPI
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from contextlib import asynccontextmanager
+from threading import Lock
 
-from models.database import SessionLocal
+from models.database import SessionLocal, engine
+from models.instance import Base
 from services.metrics_collector import MetricsCollector
 from config.settings import settings
 
 
-# 配置日志
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-# 移除默认收集器
-try:
-    from prometheus_client import (
-        REGISTRY, 
-        GC_COLLECTOR, 
-        PLATFORM_COLLECTOR, 
-        PROCESS_COLLECTOR
-    )
-    REGISTRY.unregister(GC_COLLECTOR)
-    REGISTRY.unregister(PLATFORM_COLLECTOR)
-    REGISTRY.unregister(PROCESS_COLLECTOR)
-except KeyError:
-    # 某些收集器可能未注册
-    pass
-
-# 创建FastAPI应用
-app = FastAPI(title="MySQL Session Prometheus Exporter", description="导出阿里云RDS/PolarDB MySQL实例的用户会话数指标")
-
-# 全局指标收集器
+# 创建指标收集器实例
 metrics_collector: Optional[MetricsCollector] = None
-collection_lock = threading.Lock()
 last_collection_time = 0
+collection_lock = Lock()
+
+# 创建数据库表
+Base.metadata.create_all(bind=engine)
 
 
-@contextmanager
 def get_db():
     """
-    获取数据库会话的上下文管理器
+    获取数据库会话
     """
     db = SessionLocal()
     try:
@@ -57,34 +35,56 @@ def get_db():
         db.close()
 
 
-def init_metrics_collector():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    初始化指标收集器
+    应用生命周期管理
     """
     global metrics_collector
-    with get_db() as db:
+    
+    # 启动时的初始化
+    db = next(get_db())
+    try:
         metrics_collector = MetricsCollector(db)
+        logger.info("指标收集器初始化完成")
+    finally:
+        db.close()
+    
+    yield
+    
+    # 关闭时的清理
+    logger.info("应用正在关闭")
 
 
-@app.on_event('startup')
-async def startup_event():
-    """
-    应用启动事件
-    """
-    logger.info("应用启动中...")
-    init_metrics_collector()
-    logger.info("应用启动完成")
+# 创建FastAPI应用
+app = FastAPI(
+    title="DAS Session Exporter",
+    description="阿里云DAS会话指标Prometheus Exporter",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 
 @app.get("/")
 async def root():
     """
-    根路径，返回服务信息
+    根路径，返回API信息
     """
     return {
-        "message": "MySQL Session Prometheus Exporter",
-        "description": "基于 FastAPI 的 Prometheus 自定义 Exporter,用于导出阿里云 RDS/PolarDB MySQL 实例的用户会话数指标"
+        "message": "DAS Session Exporter is running",
+        "endpoints": {
+            "/metrics": "Prometheus metrics endpoint",
+            "/health": "Health check endpoint"
+        }
     }
+
+
+@app.get("/health")
+async def health():
+    """
+    健康检查端点
+    """
+    return {"status": "healthy"}
 
 
 @app.get("/metrics")
@@ -104,7 +104,8 @@ async def get_metrics():
                     # 使用现有的metrics_collector实例更新指标
                     if metrics_collector:
                         # 重新获取数据库会话以避免会话过期
-                        with get_db() as db:
+                        db = next(get_db())
+                        try:
                             # 临时创建一个收集器用于更新指标，但不重新注册指标
                             temp_collector = MetricsCollector(db)
                             await temp_collector.collect_all_metrics()
@@ -117,6 +118,8 @@ async def get_metrics():
                             
                             last_collection_time = current_time
                             logger.info("指标已更新")
+                        finally:
+                            db.close()
                     else:
                         logger.error("指标收集器未初始化")
                 except Exception as e:
@@ -124,57 +127,33 @@ async def get_metrics():
                     # 如果更新失败，仍然返回当前指标
                     pass
     
-    # 生成并返回指标
-    encoder, content_type = choose_encoder(None)
-    output = encoder(REGISTRY)
-    return output
+    # 返回最新的指标
+    return generate_latest()
 
 
 @app.post("/refresh")
 async def refresh_metrics():
     """
-    手动触发指标更新
+    手动刷新指标端点
     """
-    global last_collection_time, metrics_collector
+    global metrics_collector
     
-    with collection_lock:
+    if metrics_collector:
+        db = next(get_db())
         try:
-            if metrics_collector:
-                # 重新获取数据库会话以避免会话过期
-                with get_db() as db:
-                    # 临时创建一个收集器用于更新指标
-                    temp_collector = MetricsCollector(db)
-                    await temp_collector.manual_refresh()
-                    
-                    # 更新全局收集器的缓存
-                    metrics_collector.session_count_cache = temp_collector.session_count_cache
-                    metrics_collector.session_count_cache_time = temp_collector.session_count_cache_time
-                    metrics_collector.max_connections_cache = temp_collector.max_connections_cache
-                    metrics_collector.max_connections_cache_time = temp_collector.max_connections_cache_time
-                    
-                    last_collection_time = time.time()
-                logger.info("手动刷新指标完成")
-                return {"message": "指标刷新成功"}
-            else:
-                logger.error("指标收集器未初始化")
-                return {"message": "指标收集器未初始化"}
-        except Exception as e:
-            logger.error(f"手动刷新指标时发生错误: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"刷新指标失败: {str(e)}")
-
-
-@app.get("/health")
-async def health_check():
-    """
-    健康检查端点
-    """
-    return {"status": "healthy", "message": "MySQL Session Exporter is running"}
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "app:app",
-        host=settings.APP_HOST,
-        port=settings.APP_PORT,
-        reload=True
-    )
+            temp_collector = MetricsCollector(db)
+            await temp_collector.manual_refresh()
+            
+            # 更新全局收集器的缓存
+            metrics_collector.session_count_cache = temp_collector.session_count_cache
+            metrics_collector.session_count_cache_time = temp_collector.session_count_cache_time
+            metrics_collector.max_connections_cache = temp_collector.max_connections_cache
+            metrics_collector.max_connections_cache_time = temp_collector.max_connections_cache_time
+            
+            logger.info("指标已手动刷新")
+            return {"status": "success", "message": "指标已手动刷新"}
+        finally:
+            db.close()
+    else:
+        logger.error("指标收集器未初始化")
+        return {"status": "error", "message": "指标收集器未初始化"}

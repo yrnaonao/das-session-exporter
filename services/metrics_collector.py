@@ -6,7 +6,7 @@ from prometheus_client import Gauge, REGISTRY
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from models.instance import InstanceList, InstanceNodeId, InstanceUsers
+from models.instance import InstanceList, InstanceUsers
 from services.das_client import DASClient
 from config.settings import settings
 
@@ -92,63 +92,15 @@ class MetricsCollector:
         for instance in instances:
             logger.info(f"处理实例: {instance.ins_id}, 类型: {instance.ins_type}, 阿里云账号: {instance.aliyun_uid}")
             
-            if instance.ins_type.lower() == 'polardb':
-                # PolarDB实例：需要查询所有节点，对每个节点调用DAS API
-                nodes = self.db.query(InstanceNodeId).filter(
-                    InstanceNodeId.ins_id == instance.ins_id
-                ).all()
-                
-                for node in nodes:
-                    node_type_label = "read" if node.node_type == 1 else "write"
-                    logger.info(f"获取PolarDB节点 {node.node_id} 的会话信息")
-                    
-                    # 对PolarDB节点调用DAS API，传递实例ID和节点ID
-                    session_data = await self.das_client.get_mysql_session_data(instance.ins_id, instance.aliyun_uid, node.node_id)
-                    if session_data:
-                        user_stats = self.das_client.parse_user_session_stats(session_data)
-                        
-                        for stat in user_stats:
-                            labels = {
-                                'ins_id': instance.ins_id,
-                                'ins_name': instance.ins_name,
-                                'ins_type': instance.ins_type.lower(),
-                                'aliyun_uid': instance.aliyun_uid,
-                                'db_user': stat['db_user'],
-                                'node_id': node.node_id,
-                                'node_type': node_type_label
-                            }
-                            value = stat['session_count']
-                            
-                            self.db_user_session_count.labels(**labels).set(value)
-                            new_cache[tuple(sorted(labels.items()))] = value
-                    else:
-                        logger.warning(f"无法获取PolarDB节点 {node.node_id} 的会话数据")
+            # 使用DAS客户端获取会话数据
+            session_data_list = await self.das_client.get_session_data_for_instance(instance)
             
-            else:  # RDS实例
-                node_type_label = "read" if instance.ins_is_readonly == 1 else "write"
-                logger.info(f"获取RDS实例 {instance.ins_id} 的会话信息")
+            for session_data_item in session_data_list:
+                labels = session_data_item['labels']
+                value = session_data_item['session_count']
                 
-                # 对RDS实例调用DAS API，只传递实例ID
-                session_data = await self.das_client.get_mysql_session_data(instance.ins_id, instance.aliyun_uid)
-                if session_data:
-                    user_stats = self.das_client.parse_user_session_stats(session_data)
-                    
-                    for stat in user_stats:
-                        labels = {
-                            'ins_id': instance.ins_id,
-                            'ins_name': instance.ins_name,
-                            'ins_type': instance.ins_type.lower(),
-                            'aliyun_uid': instance.aliyun_uid,
-                            'db_user': stat['db_user'],
-                            'node_id': '',
-                            'node_type': node_type_label
-                        }
-                        value = stat['session_count']
-                        
-                        self.db_user_session_count.labels(**labels).set(value)
-                        new_cache[tuple(sorted(labels.items()))] = value
-                else:
-                    logger.warning(f"无法获取RDS实例 {instance.ins_id} 的会话数据")
+                self.db_user_session_count.labels(**labels).set(value)
+                new_cache[tuple(sorted(labels.items()))] = value
         
         # 更新缓存
         self.session_count_cache = new_cache
