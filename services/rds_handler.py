@@ -65,23 +65,25 @@ class RDSHandler:
             return session_data_list
         
         # 从返回中获取result_id
-        result_id = session_data.get('Data', {}).get('ResultId')
+        result_id = session_data.data.result_id
         if not result_id:
             logger.error(f"RDS实例 {instance.ins_id} 未返回结果ID")
             return session_data_list
         
         # 第二次调用：轮询获取结果，传入ins_id/result_id
-        result_data = await self._get_async_result(client, result_id)
+        result_data = await self._get_async_result(client, instance.ins_id, result_id)
         if not result_data:
             logger.warning(f"无法获取RDS实例 {instance.ins_id} 的轮询结果")
             return session_data_list
         
         # 检查结果状态
-        if result_data.get('Data', {}).get('Fail', False):
+        if result_data.data.state.lower() == 'fail':
+        # if result_data.get('Data', {}).get('Fail', False):
             logger.error(f"RDS实例 {instance.ins_id} 获取会话数据失败")
             return session_data_list
         
-        session_data_result = result_data.get('Data', {}).get('SessionData')
+        # session_data_result = result_data.get('Data', {}).get('SessionData')
+        session_data_result = result_data.data.session_data
         if not session_data_result:
             logger.warning(f"RDS实例 {instance.ins_id} 未返回会话数据")
             return session_data_list
@@ -128,8 +130,8 @@ class RDSHandler:
                     lambda: client.get_my_sqlall_session_async_with_options(request, runtime)
                 )
             
-            response_data = response.body.to_map()
-            logger.info(f"获取RDS实例 {ins_id} 会话信息成功: {response_data.get('Code', 'Unknown')}")
+            response_data = response.body
+            logger.info(f"获取RDS实例 {ins_id} 会话信息成功: {response_data.code}")
             
             return response_data
             
@@ -137,7 +139,7 @@ class RDSHandler:
             logger.error(f"获取RDS实例 {ins_id} 会话信息失败: {str(e)}")
             return None
     
-    async def _get_async_result(self, client, result_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_async_result(self, client, ins_id, result_id: str) -> Optional[Dict[str, Any]]:
         """
         获取异步结果 - 第二次调用
         传入result_id进行查询
@@ -149,8 +151,9 @@ class RDSHandler:
         
         while attempt < max_attempts:
             try:
-                request = das20200116_models.GetAsyncResultRequest(
-                    resultId=result_id  # 使用正确的参数名
+                request = das20200116_models.GetMySQLAllSessionAsyncRequest(
+                    instance_id=ins_id,
+                    result_id=result_id  # 使用正确的参数名
                 )
                 runtime = util_models.RuntimeOptions()
                 
@@ -158,18 +161,20 @@ class RDSHandler:
                 with ThreadPoolExecutor() as executor:
                     response = await loop.run_in_executor(
                         executor,
-                        lambda: client.get_async_result_with_options(request, runtime)
+                        lambda: client.get_my_sqlall_session_async_with_options(request, runtime)
                     )
                 
-                response_data = response.body.to_map()
+                response_data = response.body
                 
                 # 检查是否完成
-                if response_data.get('Data', {}).get('IsFinish', False):
+                if response_data.data.is_finish:
+                # if response_data.get('Data', {}).get('IsFinish', False):
                     logger.info(f"轮询结果 {result_id} 完成")
                     return response_data
                 
                 # 如果失败，直接返回
-                if response_data.get('Data', {}).get('Fail', False):
+                if response_data.data.state.lower() == 'fail':
+                # if response_data.get('Data', {}).get('Fail', False):
                     logger.error(f"轮询结果 {result_id} 失败")
                     return response_data
                 
@@ -187,13 +192,16 @@ class RDSHandler:
         """
         解析用户会话统计信息
         """
-        user_stats = session_data.get('UserStats', [])
+        # user_stats = session_data.get('UserStats', [])
+        user_stats = session_data.user_stats
         parsed_stats = []
         
         for user_stat in user_stats:
-            user_list = user_stat.get('UserList', [])
-            total_count = user_stat.get('TotalCount', 0)
-            key = user_stat.get('Key', '')
+            # user_list = user_stat.get('UserList', [])
+            user_list = user_stat.user_list
+            total_count = user_stat.total_count
+            # total_count = user_stat.get('TotalCount', 0)
+            # key = user_stat.get('Key', '')
             
             # 为每个用户创建统计记录
             for user in user_list:

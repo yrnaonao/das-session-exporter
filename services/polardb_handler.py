@@ -72,23 +72,25 @@ class PolarDBHandler:
                 continue
             
             # 从返回中获取result_id
-            result_id = session_data.get('Data', {}).get('ResultId')
+            # result_id = session_data.get('Data', {}).get('ResultId')
+            result_id = session_data.data.result_id
             if not result_id:
                 logger.error(f"PolarDB节点 {node.node_id} 未返回结果ID")
                 continue
             
             # 第二次调用：轮询获取结果，传入ins_id/node_id/result_id
-            result_data = await self._get_async_result(client, result_id)
+            result_data = await self._get_async_result(client, ins_id=instance.ins_id, result_id=result_id, node_id=node.node_id)
             if not result_data:
                 logger.warning(f"无法获取PolarDB节点 {node.node_id} 的轮询结果")
                 continue
             
             # 检查结果状态
-            if result_data.get('Data', {}).get('Fail', False):
+            if result_data.data.state.lower() == 'fail':
                 logger.error(f"PolarDB节点 {node.node_id} 获取会话数据失败")
                 continue
             
-            session_data_result = result_data.get('Data', {}).get('SessionData')
+            # session_data_result = result_data.get('Data', {}).get('SessionData')
+            session_data_result = result_data.data.session_data
             if not session_data_result:
                 logger.warning(f"PolarDB节点 {node.node_id} 未返回会话数据")
                 continue
@@ -123,7 +125,8 @@ class PolarDBHandler:
         try:
             # 使用节点ID作为实例ID进行查询
             request = das20200116_models.GetMySQLAllSessionAsyncRequest(
-                instanceId=node_id  # 对于PolarDB，使用节点ID
+                instance_id=ins_id,
+                node_id=node_id
             )
             
             runtime = util_models.RuntimeOptions()
@@ -136,8 +139,8 @@ class PolarDBHandler:
                     lambda: client.get_my_sqlall_session_async_with_options(request, runtime)
                 )
             
-            response_data = response.body.to_map()
-            logger.info(f"获取PolarDB节点 {node_id} 会话信息成功: {response_data.get('Code', 'Unknown')}")
+            response_data = response.body
+            logger.info(f"获取PolarDB节点 {node_id} 会话信息成功: {response_data.code}")
             
             return response_data
             
@@ -145,7 +148,7 @@ class PolarDBHandler:
             logger.error(f"获取PolarDB节点 {node_id} 会话信息失败: {str(e)}")
             return None
     
-    async def _get_async_result(self, client, result_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_async_result(self, client, ins_id: str, result_id: str, node_id: str = None) -> Optional[Dict[str, Any]]:
         """
         获取异步结果 - 第二次调用
         传入result_id进行查询
@@ -154,12 +157,21 @@ class PolarDBHandler:
         
         max_attempts = 30  # 最多轮询30次
         attempt = 0
+
+        if node_id:
+            request = das20200116_models.GetMySQLAllSessionAsyncRequest(
+                instance_id=ins_id,
+                node_id=node_id,
+                result_id=result_id
+            )
+        else:
+            request = das20200116_models.GetMySQLAllSessionAsyncRequest(
+                instance_id=ins_id,
+                result_id=result_id
+            )
         
         while attempt < max_attempts:
             try:
-                request = das20200116_models.GetMySQLAllSessionAsyncRequest(
-                    result_id=result_id  # 使用正确的参数名
-                )
                 runtime = util_models.RuntimeOptions()
                 
                 loop = asyncio.get_event_loop()
@@ -169,20 +181,15 @@ class PolarDBHandler:
                         lambda: client.get_my_sqlall_session_async_with_options(request, runtime)
                     )
                 
-                response_data = response.body.to_map()
+                response_data = response.body
                 
                 # 检查是否完成
-                if response_data.get('Data', {}).get('IsFinish', False):
+                if response_data.data.is_finish:
                     logger.info(f"轮询结果 {result_id} 完成")
                     return response_data
-                
-                # 如果失败，直接返回
-                if response_data.get('Data', {}).get('Fail', False):
-                    logger.error(f"轮询结果 {result_id} 失败")
-                    return response_data
-                
-                attempt += 1
-                await asyncio.sleep(2)  # 等待2秒后继续轮询
+                else:              
+                    attempt += 1
+                    await asyncio.sleep(2)  # 等待2秒后继续轮询
                 
             except Exception as e:
                 logger.error(f"轮询结果 {result_id} 失败: {str(e)}")
@@ -195,13 +202,14 @@ class PolarDBHandler:
         """
         解析用户会话统计信息
         """
-        user_stats = session_data.get('UserStats', [])
+        # user_stats = session_data.get('UserStats', [])
+        user_stats = session_data.user_stats
         parsed_stats = []
         
         for user_stat in user_stats:
-            user_list = user_stat.get('UserList', [])
-            total_count = user_stat.get('TotalCount', 0)
-            key = user_stat.get('Key', '')
+            user_list = user_stat.user_list
+            total_count = user_stat.total_count
+            # key = user_stat.key
             
             # 为每个用户创建统计记录
             for user in user_list:
