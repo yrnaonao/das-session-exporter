@@ -1,0 +1,1 @@
+﻿# MySQL Session Prometheus Exporter
